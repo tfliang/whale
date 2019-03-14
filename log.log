@@ -1,0 +1,29 @@
+2019-02-09 11:18:55,526 - whale - INFO - Start print log
+2019-02-09 11:18:55,527 - whale - WARNING - Something maybe fail.
+2019-02-09 11:18:55,527 - whale - INFO - Finish
+2019-02-09 11:21:38,281 - whale - INFO - Start print log
+2019-02-09 11:21:38,281 - whale - WARNING - Something maybe fail.
+2019-02-09 11:21:38,281 - whale - INFO - Finish
+INFO 2019-02-09 11:35:23,529 utils 54324 140735771902848 utils.py Start print log
+WARNING 2019-02-09 11:35:23,529 utils 54324 140735771902848 utils.py Something maybe fail.
+INFO 2019-02-09 11:35:23,529 utils 54324 140735771902848 utils.py Finish
+INFO 2019-02-09 11:36:05 utils 54338 140735771902848 utils.py Start print log
+WARNING 2019-02-09 11:36:05 utils 54338 140735771902848 utils.py Something maybe fail.
+INFO 2019-02-09 11:36:05 utils 54338 140735771902848 utils.py Finish
+2019-02-09 11:37:46 INFO-utils.py-utils-54373-140735771902848-Start print log
+2019-02-09 11:37:46 WARNING-utils.py-utils-54373-140735771902848-Something maybe fail.
+2019-02-09 11:37:46 INFO-utils.py-utils-54373-140735771902848-Finish
+2019-02-09 11:38:11 INFO - utils.py - utils - 54392 - 140735771902848 - Start print log
+2019-02-09 11:38:11 WARNING - utils.py - utils - 54392 - 140735771902848 - Something maybe fail.
+2019-02-09 11:38:11 INFO - utils.py - utils - 54392 - 140735771902848 - Finish
+2019-02-09 11:43:23 INFO - data.py - data - 54476 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 11:43:23 INFO - data.py - data - 54476 - 140735771902848 - fname: /Users/sid/data/whale/train/02f250971.jpg
+2019-02-09 11:43:23 INFO - data.py - data - 54476 - 140735771902848 - fname: /Users/sid/data/whale/train/03b6593e9.jpg
+2019-02-09 12:10:17 INFO - data.py - data - 54806 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 12:10:20 INFO - data.py - data - 54806 - 140735771902848 - fname: /Users/sid/data/whale/train/02f250971.jpg
+2019-02-09 12:10:20 INFO - data.py - data - 54806 - 140735771902848 - fname: /Users/sid/data/whale/train/03b6593e9.jpg
+2019-02-09 12:12:29 INFO - data.py - data - 54851 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 12:12:41 INFO - data.py - data - 54858 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 12:14:13 INFO - data.py - data - 54875 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 12:15:34 INFO - data.py - data - 54895 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
+2019-02-09 12:16:58 INFO - data.py - data - 54922 - 140735771902848 - fname: /Users/sid/data/whale/train/02bdec750.jpg
