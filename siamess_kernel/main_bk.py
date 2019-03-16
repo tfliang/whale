@@ -50,12 +50,78 @@ submit = [p for _, p, _ in read_csv(SUB_Df).to_records()]
 join = list(tagged.keys()) + submit
 
 
+def expand_path(p):
+    if isfile(TRAIN + p):
+        return TRAIN + p
+    if isfile(TEST + p):
+        return TEST + p
+    return p
+
+
+if isfile(P2SIZE):
+    print("P2SIZE exists.")
+    with open(P2SIZE, 'rb') as f:
+        p2size = pickle.load(f)
+else:
+    p2size = {}
+    for p in tqdm(join):
+        size = pil_image.open(expand_path(p)).size
+        p2size[p] = size
+
+
+def match(h1, h2):
+    for p1 in h2ps[h1]:
+        for p2 in h2ps[h2]:
+            i1 = pil_image.open(expand_path(p1))
+            i2 = pil_image.open(expand_path(p2))
+            if i1.mode != i2.mode or i1.size != i2.size: return False
+            a1 = np.array(i1)
+            a1 = a1 - a1.mean()
+            a1 = a1 / sqrt((a1 ** 2).mean())
+            a2 = np.array(i2)
+            a2 = a2 - a2.mean()
+            a2 = a2 / sqrt((a2 ** 2).mean())
+            a = ((a1 - a2) ** 2).mean()
+            if a > 0.1: return False
+    return True
+
 
 if isfile(P2H):
     print("P2H exists.")
     with open(P2H, 'rb') as f:
         p2h = pickle.load(f)
+else:
+    # Compute phash for each image in the training and test set.
+    p2h = {}
+    for p in tqdm(join):
+        img = pil_image.open(expand_path(p))
+        h = phash(img)
+        p2h[p] = h
 
+    # Find all images associated with a given phash value.
+    h2ps = {}
+    for p, h in p2h.items():
+        if h not in h2ps: h2ps[h] = []
+        if p not in h2ps[h]: h2ps[h].append(p)
+
+    # Find all distinct phash values
+    hs = list(h2ps.keys())
+
+    # If the images are close enough, associate the two phash values (this is the slow part: n^2 algorithm)
+    h2h = {}
+    for i, h1 in enumerate(tqdm(hs)):
+        for h2 in hs[:i]:
+            if h1 - h2 <= 6 and match(h1, h2):
+                s1 = str(h1)
+                s2 = str(h2)
+                if s1 < s2: s1, s2 = s2, s1
+                h2h[s1] = s2
+
+    # Group together images with equivalent phash, and replace by string format of phash (faster and more readable)
+    for p, h in p2h.items():
+        h = str(h)
+        if h in h2h: h = h2h[h]
+        p2h[p] = h
 #     with open(P2H, 'wb') as f:
 #         pickle.dump(p2h, f)
 # For each image id, determine the list of pictures
@@ -64,9 +130,33 @@ for p, h in p2h.items():
     if h not in h2ps: h2ps[h] = []
     if p not in h2ps[h]: h2ps[h].append(p)
 
+
+def show_whale(imgs, per_row=2):
+    n = len(imgs)
+    rows = (n + per_row - 1) // per_row
+    cols = min(per_row, n)
+    fig, axes = plt.subplots(rows, cols, figsize=(24 // per_row * cols, 24 // per_row * rows))
+    for ax in axes.flatten(): ax.axis('off')
+    for i, (img, ax) in enumerate(zip(imgs, axes.flatten())): ax.imshow(img.convert('RGB'))
+
+
 def read_raw_image(p):
     img = pil_image.open(expand_path(p))
     return img
+
+
+# For each images id, select the prefered image
+def prefer(ps):
+    if len(ps) == 1: return ps[0]
+    best_p = ps[0]
+    best_s = p2size[best_p]
+    for i in range(1, len(ps)):
+        p = ps[i]
+        s = p2size[p]
+        if s[0] * s[1] > best_s[0] * best_s[1]:  # Select the image with highest resolution
+            best_p = p
+            best_s = s
+    return best_p
 
 h2p = {}
 for h, ps in h2ps.items():
@@ -74,8 +164,15 @@ for h, ps in h2ps.items():
 len(h2p), list(h2p.items())[:5]
 
 
+
+
 # Read the bounding box data from the bounding box kernel (see reference above)
 p2bb = pd.read_csv(BB_DF).set_index("Image")
+
+old_stderr = sys.stderr
+sys.stderr = open('/dev/null' if platform.system() != 'Windows' else 'nul', 'w')
+
+sys.stderr = old_stderr
 
 img_shape = (384, 384, 1)  # The image shape used by the model
 anisotropy = 2.15  # The horizontal compression ratio
@@ -183,6 +280,101 @@ def read_for_validation(p):
 
 
 p = list(tagged.keys())[312]
+
+
+
+def subblock(x, filter, **kwargs):
+    x = BatchNormalization()(x)
+    y = x
+    y = Conv2D(filter, (1, 1), activation='relu', **kwargs)(y)  # Reduce the number of features to 'filter'
+    y = BatchNormalization()(y)
+    y = Conv2D(filter, (3, 3), activation='relu', **kwargs)(y)  # Extend the feature field
+    y = BatchNormalization()(y)
+    y = Conv2D(K.int_shape(x)[-1], (1, 1), **kwargs)(y)  # no activation # Restore the number of original features
+    y = Add()([x, y])  # Add the bypass connection
+    y = Activation('relu')(y)
+    return y
+
+
+def build_model(lr, l2, activation='sigmoid'):
+    ##############
+    # BRANCH MODEL
+    ##############
+    regul = regularizers.l2(l2)
+    optim = Adam(lr=lr)
+    kwargs = {'padding': 'same', 'kernel_regularizer': regul}
+
+    inp = Input(shape=img_shape)  # 384x384x1
+    x = Conv2D(64, (9, 9), strides=2, activation='relu', **kwargs)(inp)
+
+    x = MaxPooling2D((2, 2), strides=(2, 2))(x)  # 96x96x64
+    for _ in range(2):
+        x = BatchNormalization()(x)
+        x = Conv2D(64, (3, 3), activation='relu', **kwargs)(x)
+
+    x = MaxPooling2D((2, 2), strides=(2, 2))(x)  # 48x48x64
+    x = BatchNormalization()(x)
+    x = Conv2D(128, (1, 1), activation='relu', **kwargs)(x)  # 48x48x128
+    for _ in range(4):
+        x = subblock(x, 64, **kwargs)
+
+    x = MaxPooling2D((2, 2), strides=(2, 2))(x)  # 24x24x128
+    x = BatchNormalization()(x)
+    x = Conv2D(256, (1, 1), activation='relu', **kwargs)(x)  # 24x24x256
+    for _ in range(4):
+        x = subblock(x, 64, **kwargs)
+
+    x = MaxPooling2D((2, 2), strides=(2, 2))(x)  # 12x12x256
+    x = BatchNormalization()(x)
+    x = Conv2D(384, (1, 1), activation='relu', **kwargs)(x)  # 12x12x384
+    for _ in range(4):
+        x = subblock(x, 96, **kwargs)
+
+    x = MaxPooling2D((2, 2), strides=(2, 2))(x)  # 6x6x384
+    x = BatchNormalization()(x)
+    x = Conv2D(512, (1, 1), activation='relu', **kwargs)(x)  # 6x6x512
+    for _ in range(4):
+        x = subblock(x, 128, **kwargs)
+
+    x = GlobalMaxPooling2D()(x)  # 512
+    branch_model = Model(inp, x)
+
+    ############
+    # HEAD MODEL
+    ############
+    mid = 32
+    xa_inp = Input(shape=branch_model.output_shape[1:])
+    xb_inp = Input(shape=branch_model.output_shape[1:])
+    x1 = Lambda(lambda x: x[0] * x[1])([xa_inp, xb_inp])
+    x2 = Lambda(lambda x: x[0] + x[1])([xa_inp, xb_inp])
+    x3 = Lambda(lambda x: K.abs(x[0] - x[1]))([xa_inp, xb_inp])
+    x4 = Lambda(lambda x: K.square(x))(x3)
+    x = Concatenate()([x1, x2, x3, x4])
+    x = Reshape((4, branch_model.output_shape[1], 1), name='reshape1')(x)
+
+    # Per feature NN with shared weight is implemented using CONV2D with appropriate stride.
+    x = Conv2D(mid, (4, 1), activation='relu', padding='valid')(x)
+    x = Reshape((branch_model.output_shape[1], mid, 1))(x)
+    x = Conv2D(1, (1, mid), activation='linear', padding='valid')(x)
+    x = Flatten(name='flatten')(x)
+
+    # Weighted sum implemented as a Dense layer.
+    x = Dense(1, use_bias=True, activation=activation, name='weighted-average')(x)
+    head_model = Model([xa_inp, xb_inp], x, name='head')
+
+    ########################
+    # SIAMESE NEURAL NETWORK
+    ########################
+    # Complete model is constructed by calling the branch model on each input image,
+    # and then the head model on the resulting 512-vectors.
+    img_a = Input(shape=img_shape)
+    img_b = Input(shape=img_shape)
+    xa = branch_model(img_a)
+    xb = branch_model(img_b)
+    x = head_model([xa, xb])
+    model = Model([img_a, img_b], x)
+    model.compile(optim, loss='binary_crossentropy', metrics=['binary_crossentropy', 'acc'])
+    return model, branch_model, head_model
 
 
 model, branch_model, head_model = build_model(64e-5, 0)
@@ -493,108 +685,110 @@ def prepare_submission(threshold, filename):
             f.write(p + ',' + ' '.join(t[:5]) + '\n')
     return vtop, vhigh, pos
 
-def main():
-    histories = []
-    steps = 0
-    
-    #if isfile('../input/piotte/mpiotte-standard.model'):
-    if isfile(Piotte_standard):
-        #############################
-        # Load standard model and compute score
-        #tmp = keras.models.load_model('../input/piotte/mpiotte-standard.model')
-        tmp = keras.models.load_model(Piotte_standard)
-        model.set_weights(tmp.get_weights())
-    
-        # Find elements from training sets not 'new_whale'
-        tic = time.time()
-        h2ws = {}
-        for p, w in tagged.items():
-            if w != new_whale:  # Use only identified whales
-                h = p2h[p]
-                if h not in h2ws: h2ws[h] = []
-                if w not in h2ws[h]: h2ws[h].append(w)
-        known = sorted(list(h2ws.keys()))
-    
-        # Dictionary of picture indices
-        h2i = {}
-        for i, h in enumerate(known): h2i[h] = i
-    
-        # Evaluate the model.
-        fknown1 = branch_model.predict_generator(FeatureGen(known), max_queue_size=20, workers=10, verbose=1)
-        fsubmit1 = branch_model.predict_generator(FeatureGen(submit), max_queue_size=20, workers=10, verbose=1)
-        score1 = head_model.predict_generator(ScoreGen(fknown1, fsubmit1), max_queue_size=20, workers=10, verbose=1)
-        score1 = score_reshape(score1, fknown1, fsubmit1)
-    
-        ###########################
-        # Load bootstrap model and compute score
-        #tmp = keras.models.load_model('../input/piotte/mpiotte-bootstrap.model')
-        tmp = keras.models.load_model(Piotte_bootstrap)
-        model.set_weights(tmp.get_weights())
-    
-        # Find elements from training sets not 'new_whale'
-        tic = time.time()
-        h2ws = {}
-        for p, w in tagged.items():
-            if w != new_whale:  # Use only identified whales
-                h = p2h[p]
-                if h not in h2ws: h2ws[h] = []
-                if w not in h2ws[h]: h2ws[h].append(w)
-        known = sorted(list(h2ws.keys()))
-    
-        # Dictionary of picture indices
-        h2i = {}
-        for i, h in enumerate(known): h2i[h] = i
-    
-        # Evaluate the model.
-        fknown2 = branch_model.predict_generator(FeatureGen(known), max_queue_size=20, workers=10, verbose=1)
-        fsubmit2 = branch_model.predict_generator(FeatureGen(submit), max_queue_size=20, workers=10, verbose=1)
-        score2 = head_model.predict_generator(ScoreGen(fknown2, fsubmit2), max_queue_size=20, workers=10, verbose=1)
-        score2 = score_reshape(score2, fknown2, fsubmit2)
-    
-    else:
-        # epoch -> 10
-        make_steps(10, 1000)
-        ampl = 100.0
-        for _ in range(2):
-            print('noise ampl.  = ', ampl)
-            make_steps(5, ampl)
-            ampl = max(1.0, 100 ** -0.1 * ampl)
-    #     # epoch -> 150
-    #     for _ in range(18): make_steps(5, 1.0)
-    #     # epoch -> 200
-    #     set_lr(model, 16e-5)
-    #     for _ in range(10): make_steps(5, 0.5)
-    #     # epoch -> 240
-    #     set_lr(model, 4e-5)
-    #     for _ in range(8): make_steps(5, 0.25)
-    #     # epoch -> 250
-    #     set_lr(model, 1e-5)
-    #     for _ in range(2): make_steps(5, 0.25)
-    #     # epoch -> 300
-    #     weights = model.get_weights()
-    #     model, branch_model, head_model = build_model(64e-5, 0.0002)
-    #     model.set_weights(weights)
-    #     for _ in range(10): make_steps(5, 1.0)
-    #     # epoch -> 350
-    #     set_lr(model, 16e-5)
-    #     for _ in range(10): make_steps(5, 0.5)
-    #     # epoch -> 390
-    #     set_lr(model, 4e-5)
-    #     for _ in range(8): make_steps(5, 0.25)
-    #     # epoch -> 400
-    #     set_lr(model, 1e-5)
-    #     for _ in range(2): make_steps(5, 0.25)
-    #     model.save('standard.model')
-    
-    
-    # Do the weighthing exaclty as Martin suggests
-    score = 0.45*score1 + 0.55*score2
-    
-    
-    # Generate the subsmission file.
-    prepare_submission(0.92, 'submission_0.45_standard_0.55_boostrap.csv')
-    toc = time.time()
-    print("Submission time: ", (toc - tic) / 60.)
 
-if __name__ == '__main__':
-    main()
+histories = []
+steps = 0
+
+#if isfile('../input/piotte/mpiotte-standard.model'):
+if isfile(Piotte_standard):
+    #############################
+    # Load standard model and compute score
+    #tmp = keras.models.load_model('../input/piotte/mpiotte-standard.model')
+    tmp = keras.models.load_model(Piotte_standard)
+    model.set_weights(tmp.get_weights())
+
+    # Find elements from training sets not 'new_whale'
+    tic = time.time()
+    h2ws = {}
+    for p, w in tagged.items():
+        if w != new_whale:  # Use only identified whales
+            h = p2h[p]
+            if h not in h2ws: h2ws[h] = []
+            if w not in h2ws[h]: h2ws[h].append(w)
+    known = sorted(list(h2ws.keys()))
+
+    # Dictionary of picture indices
+    h2i = {}
+    for i, h in enumerate(known): h2i[h] = i
+
+    # Evaluate the model.
+    fknown1 = branch_model.predict_generator(FeatureGen(known), max_queue_size=20, workers=10, verbose=1)
+    fsubmit1 = branch_model.predict_generator(FeatureGen(submit), max_queue_size=20, workers=10, verbose=1)
+    score1 = head_model.predict_generator(ScoreGen(fknown1, fsubmit1), max_queue_size=20, workers=10, verbose=1)
+    score1 = score_reshape(score1, fknown1, fsubmit1)
+
+    ###########################
+    # Load bootstrap model and compute score
+    #tmp = keras.models.load_model('../input/piotte/mpiotte-bootstrap.model')
+    tmp = keras.models.load_model(Piotte_bootstrap)
+    model.set_weights(tmp.get_weights())
+
+    # Find elements from training sets not 'new_whale'
+    tic = time.time()
+    h2ws = {}
+    for p, w in tagged.items():
+        if w != new_whale:  # Use only identified whales
+            h = p2h[p]
+            if h not in h2ws: h2ws[h] = []
+            if w not in h2ws[h]: h2ws[h].append(w)
+    known = sorted(list(h2ws.keys()))
+
+    # Dictionary of picture indices
+    h2i = {}
+    for i, h in enumerate(known): h2i[h] = i
+
+    # Evaluate the model.
+    fknown2 = branch_model.predict_generator(FeatureGen(known), max_queue_size=20, workers=10, verbose=1)
+    fsubmit2 = branch_model.predict_generator(FeatureGen(submit), max_queue_size=20, workers=10, verbose=1)
+    score2 = head_model.predict_generator(ScoreGen(fknown2, fsubmit2), max_queue_size=20, workers=10, verbose=1)
+    score2 = score_reshape(score2, fknown2, fsubmit2)
+
+else:
+    # epoch -> 10
+    make_steps(10, 1000)
+    ampl = 100.0
+    for _ in range(2):
+        print('noise ampl.  = ', ampl)
+        make_steps(5, ampl)
+        ampl = max(1.0, 100 ** -0.1 * ampl)
+#     # epoch -> 150
+#     for _ in range(18): make_steps(5, 1.0)
+#     # epoch -> 200
+#     set_lr(model, 16e-5)
+#     for _ in range(10): make_steps(5, 0.5)
+#     # epoch -> 240
+#     set_lr(model, 4e-5)
+#     for _ in range(8): make_steps(5, 0.25)
+#     # epoch -> 250
+#     set_lr(model, 1e-5)
+#     for _ in range(2): make_steps(5, 0.25)
+#     # epoch -> 300
+#     weights = model.get_weights()
+#     model, branch_model, head_model = build_model(64e-5, 0.0002)
+#     model.set_weights(weights)
+#     for _ in range(10): make_steps(5, 1.0)
+#     # epoch -> 350
+#     set_lr(model, 16e-5)
+#     for _ in range(10): make_steps(5, 0.5)
+#     # epoch -> 390
+#     set_lr(model, 4e-5)
+#     for _ in range(8): make_steps(5, 0.25)
+#     # epoch -> 400
+#     set_lr(model, 1e-5)
+#     for _ in range(2): make_steps(5, 0.25)
+#     model.save('standard.model')
+
+
+# Do the weighthing exaclty as Martin suggests
+score = 0.45*score1 + 0.55*score2
+
+
+# Generate the subsmission file.
+prepare_submission(0.92, 'submission_0.45_standard_0.55_boostrap.csv')
+toc = time.time()
+print("Submission time: ", (toc - tic) / 60.)
+
+
+
+
+
